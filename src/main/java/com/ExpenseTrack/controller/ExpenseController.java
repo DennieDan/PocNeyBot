@@ -10,6 +10,7 @@ import javax.sql.DataSource;
 import javax.transaction.Transactional;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -150,6 +151,37 @@ public class ExpenseController {
             return ResponseEntity.status(500).body(error);
         }
     }
+//    @GetMapping("/cloud-test")
+//    public ResponseEntity<?> testCloudConnection() {
+//        Map<String, Object> result = new HashMap<>();
+//
+//        try (Connection conn = dataSource.getConnection()) {
+//            DatabaseMetaData meta = conn.getMetaData();
+//
+//            result.put("status", "CONNECTED");
+//            result.put("database", meta.getDatabaseProductName());
+//            result.put("url", meta.getURL());
+//            result.put("user", meta.getUserName());
+//
+//            // Check if tables exist
+//            String[] tables = {"categories", "payment_methods", "transactions"};
+//            for (String table : tables) {
+//                try (Statement stmt = conn.createStatement()) {
+//                    ResultSet rs = stmt.executeQuery(
+//                            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = '" + table + "')");
+//                    rs.next();
+//                    result.put(table + "_exists", rs.getBoolean(1));
+//                }
+//            }
+//
+//            return ResponseEntity.ok(result);
+//
+//        } catch (Exception e) {
+//            result.put("status", "FAILED");
+//            result.put("error", e.getMessage());
+//            return ResponseEntity.status(500).body(result);
+//        }
+//    }
     @PostMapping("/direct")
     public ResponseEntity<?> directInsert(@RequestBody Map<String, Object> request) {
         System.out.println("🔧 DIRECT INSERT WITH EXPLICIT COMMIT");
