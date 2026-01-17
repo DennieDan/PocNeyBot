@@ -1,8 +1,9 @@
-import io
-import json
 import logging
 import os
 import tempfile
+import uuid
+from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import torch
@@ -10,7 +11,7 @@ from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from PIL import Image
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,7 +54,7 @@ else:
 
 
 def convert_to_json_serializable(obj):
-    """Convert numpy types and other non-serializable types to JSON-serializable."""
+    """Convert numpy types to JSON-serializable."""
     if isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
@@ -129,15 +130,79 @@ async def ocr_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-@app.post("/manual-input")
-async def manual_input(data: dict):
+# Pydantic models for manual input endpoint
+class ManualInputRequest(BaseModel):
+    amount: float
+    note: str
+    category: Optional[int] = None
+    source: Optional[int] = None
+    time: Optional[datetime] = None
+
+
+class ManualInputResponse(BaseModel):
+    id: str
+    payment_method: str
+    ai_comment: str
+    category: str
+    amount: float
+    currency: str
+    merchant: Optional[str] = None
+    occurredAt: datetime
+    note: Optional[str] = None
+
+
+@app.post("/manual-input", response_model=ManualInputResponse)
+async def manual_input(data: ManualInputRequest):
     """
-    Manual input endpoint that accepts a JSON object and returns a JSON response.
+    Manual input endpoint that accepts transaction data.
 
     Args:
-        data: JSON object
+        data: Transaction input data containing amount, note,
+              and optional fields
 
     Returns:
-        JSON response
+        JSON response with transaction details including id,
+        payment_method, ai_comment, category, and amount
     """
-    return JSONResponse(content=data)
+    # Generate a unique transaction ID
+    transaction_id = str(uuid.uuid4())
+
+    # Placeholder logic for payment_method (can be enhanced later)
+    # For now, using a simple mapping or default value
+    payment_method = "Cash"
+
+    # Placeholder logic for ai_comment (can be enhanced with AI later)
+    ai_comment = f"Transaction processed: {data.note}"
+
+    currency = "SGD"
+
+    merchant = "Unknown"
+
+    # Placeholder logic for category (convert from number to string)
+    # For now, using a simple mapping
+    category_map = {
+        1: "Food",
+        2: "Transport",
+        3: "Shopping",
+        4: "Bills",
+        5: "Entertainment",
+        6: "Other",
+    }
+    if data.category:
+        category_str = category_map.get(data.category, "Uncategorized")
+    else:
+        category_str = "Uncategorized"
+
+    response = ManualInputResponse(
+        id=transaction_id,
+        payment_method=payment_method,
+        ai_comment=ai_comment,
+        category=category_str,
+        amount=data.amount,
+        currency=currency,
+        merchant=merchant,
+        occurredAt=datetime.now(),
+        note=data.note,
+    )
+
+    return response
