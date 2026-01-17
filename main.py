@@ -127,3 +127,17 @@ async def ocr_image(file: UploadFile = File(...)):
         error_msg = f"Error processing image: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/manual-input")
+async def manual_input(data: dict):
+    """
+    Manual input endpoint that accepts a JSON object and returns a JSON response.
+
+    Args:
+        data: JSON object
+
+    Returns:
+        JSON response
+    """
+    return JSONResponse(content=data)
