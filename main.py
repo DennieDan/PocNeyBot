@@ -761,7 +761,18 @@ async def call_ai_comment(data: list[InsertTransactionRequest]):
     """
     json_input = [item.model_dump() for item in data]
     prompt = ANNOYING_PROMPT + "\n\n" + json.dumps(json_input)
-    ai_comment = {"ai_comment": call_llm.call_llm(prompt), "status": 200}
+    # the response should be a list of strings
+    ai_response = call_llm.call_llm_json(prompt)
+    if not isinstance(ai_response, list):
+        raise HTTPException(status_code=500, detail="AI response is not a list")
+    if len(ai_response) == 0:
+        raise HTTPException(status_code=500, detail="AI response is empty")
+    for comment in ai_response:
+        if not isinstance(comment, str):
+            raise HTTPException(
+                status_code=500, detail="AI response is not a list of strings"
+            )
+    ai_comment = {"ai_comment": ai_response, "status": 200}
 
     return JSONResponse(content=ai_comment)
 
@@ -796,11 +807,11 @@ async def insert_transactions(data: List[InsertTransactionRequest]):
         ai_comment_response = await call_ai_comment(data)
         # Extract the content from JSONResponse
         ai_comment_dict = json.loads(ai_comment_response.body.decode("utf-8"))
-        ai_comment_text = ai_comment_dict["ai_comment"]
+        ai_comments = ai_comment_dict["ai_comment"]
 
         responses = []
 
-        for transaction_data in data:
+        for i, transaction_data in enumerate(data):
             # Handle category - find or create (with caching)
             category_name = (
                 transaction_data.category
@@ -834,7 +845,7 @@ async def insert_transactions(data: List[InsertTransactionRequest]):
             expense = True  # Default to expense
             # Use AI-generated comment if available, otherwise use default
             ai_comment = (
-                ai_comment_text if ai_comment_text else "Please save money, kiddo!"
+                ai_comments[i] if i < len(ai_comments) else "Please save money, kiddo!"
             )
 
             # Insert transaction
