@@ -4,9 +4,11 @@ import os
 import tempfile
 import uuid
 from datetime import datetime
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
+import psycopg2
+import psycopg2.extras
 import torch
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
@@ -25,6 +27,30 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Database configuration
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_PORT = os.getenv("DB_PORT", "5436")
+DB_NAME = os.getenv("DB_NAME", "spendy-db")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
+
+
+def get_db_connection():
+    """Get a database connection."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+        )
+        return conn
+    except Exception as e:
+        logger.error(f"Error connecting to database: {str(e)}")
+        raise
+
 
 # Ensure Hugging Face cache is set to a persistent location
 # This prevents re-downloading models on every restart
@@ -501,11 +527,83 @@ async def manual_input(data: ManualInputRequest):
         currency=currency,
         item=None,
         merchant=merchant,
-        occurredAt=datetime.now(),
+        occurredAt=data.occurredAt if data.occurredAt else datetime.now(),
         note=data.note,
     )
 
     return response
+
+
+@app.get("/transactions", response_model=List[ManualInputResponse])
+async def get_transactions():
+    """
+    Get all transactions endpoint that returns all stored transactions from the database.
+
+    Returns:
+        List of all transactions with ManualInputResponse type
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # Query transactions with joins to get category and payment method
+        query = """
+            SELECT
+                t.id,
+                t.date,
+                t.amount,
+                t.description,
+                t.merchant,
+                t.ai_comment,
+                c.name as category_name,
+                pm.name as payment_method_name
+            FROM transactions t
+            LEFT JOIN categories c ON t.category_id = c.id
+            LEFT JOIN payment_methods pm ON t.payment_method_id = pm.id
+            ORDER BY t.date DESC
+        """
+
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        transactions = []
+        for row in rows:
+            # Parse date - it's stored as TEXT, so we need to handle it
+            try:
+                if isinstance(row["date"], str):
+                    date_str = row["date"].replace("Z", "+00:00")
+                    occurred_at = datetime.fromisoformat(date_str)
+                else:
+                    occurred_at = row["date"]
+            except Exception:
+                # Fallback to current time if parsing fails
+                occurred_at = datetime.now()
+
+            transaction = ManualInputResponse(
+                id=str(row["id"]),
+                method=row["payment_method_name"] or "Unknown",
+                aiComment=row["ai_comment"] or "",
+                category=row["category_name"] or "Uncategorized",
+                amount=float(row["amount"]),
+                currency="SGD",  # Default - not in schema
+                item=None,
+                merchant=row["merchant"],
+                occurredAt=occurred_at,
+                note=row["description"],
+            )
+            transactions.append(transaction)
+
+        cursor.close()
+        return transactions
+
+    except Exception as e:
+        logger.error(f"Error fetching transactions: {str(e)}", exc_info=True)
+        error_msg = f"Error fetching transactions: {str(e)}"
+        raise HTTPException(status_code=500, detail=error_msg)
+    finally:
+        if conn:
+            conn.close()
 
 
 @app.post("/call_ai_comment")
