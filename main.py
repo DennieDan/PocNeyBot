@@ -600,7 +600,7 @@ class InsertTransactionRequest(BaseModel):
     currency: str
     category: Optional[str] = None
     method: Optional[str] = None
-    occurredAt: datetime
+    occurredAt: str
     merchant: Optional[str] = None
     note: Optional[str] = None
 
@@ -748,7 +748,7 @@ async def get_transactions():
 
 
 @app.post("/call_ai_comment")
-async def call_ai_comment(data: list[TransactionInput]):
+async def call_ai_comment(data: list[InsertTransactionRequest]):
     """
     Call AI comment endpoint that accepts transaction data.
 
@@ -791,6 +791,13 @@ async def insert_transactions(data: List[InsertTransactionRequest]):
         category_cache = {}
         payment_method_cache = {}
 
+        # Call AI comment
+        logger.info("Calling AI comment")
+        ai_comment_response = await call_ai_comment(data)
+        # Extract the content from JSONResponse
+        ai_comment_dict = json.loads(ai_comment_response.body.decode("utf-8"))
+        ai_comment_text = ai_comment_dict["ai_comment"]
+
         responses = []
 
         for transaction_data in data:
@@ -820,12 +827,15 @@ async def insert_transactions(data: List[InsertTransactionRequest]):
 
             # Prepare transaction data
             occurred_at = transaction_data.occurredAt
-            date_str = occurred_at.isoformat()
+            date_str = occurred_at
             amount = transaction_data.amount
             description = transaction_data.note if transaction_data.note else ""
             merchant = transaction_data.merchant if transaction_data.merchant else None
             expense = True  # Default to expense
-            ai_comment = "Transaction inserted via API"  # Default AI comment
+            # Use AI-generated comment if available, otherwise use default
+            ai_comment = (
+                ai_comment_text if ai_comment_text else "Please save money, kiddo!"
+            )
 
             # Insert transaction
             insert_query = """
@@ -865,6 +875,8 @@ async def insert_transactions(data: List[InsertTransactionRequest]):
                 aiComment=ai_comment,
             )
             responses.append(response)
+
+        logger.info(f"Responses: {responses}")
 
         # Commit all transactions at once
         conn.commit()
