@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime
 from typing import List, Optional, Union
@@ -120,6 +121,7 @@ def read_root():
 
 @app.get("/health")
 def health_check():
+    logger.info("Health check endpoint called")
     return {"status": "healthy", "device": device}
 
 
@@ -232,7 +234,8 @@ def create_ocr_result_from_text(text: str) -> dict:
 @app.post("/ocr_render")
 async def ocr_render(file: UploadFile = File(...)):
     """
-    OCR render endpoint that accepts an image or PDF file and returns a rendered PDF file.
+    OCR render endpoint that accepts an image or PDF file and returns
+    a rendered PDF file.
 
     Args:
         file: Image file (JPEG, PNG, etc.) or PDF file (including PDF/A)
@@ -240,6 +243,13 @@ async def ocr_render(file: UploadFile = File(...)):
     Returns:
         Texts in same lines
     """
+    start_time = time.time()
+
+    logger.info(
+        f"Received OCR render request - filename: {file.filename}, "
+        f"content_type: {file.content_type}"
+    )
+
     # Validate file type
     is_pdf = file.content_type and file.content_type in [
         "application/pdf",
@@ -248,14 +258,26 @@ async def ocr_render(file: UploadFile = File(...)):
     is_image = file.content_type and file.content_type.startswith("image/")
 
     if not (is_pdf or is_image):
+        logger.warning(
+            f"Invalid file type rejected - content_type: {file.content_type}, "
+            f"filename: {file.filename}"
+        )
         raise HTTPException(
             status_code=400,
             detail="File must be an image (JPEG, PNG, etc.) or PDF",
         )
 
+    logger.info(f"File type validated - is_pdf: {is_pdf}, is_image: {is_image}")
+
     try:
         # Read the uploaded file
+        logger.debug("Reading uploaded file contents...")
         contents = await file.read()
+        file_size = len(contents)
+        logger.info(
+            f"File read successfully - size: {file_size} bytes "
+            f"({file_size / 1024:.2f} KB)"
+        )
 
         # Determine file extension
         if is_pdf:
@@ -267,21 +289,36 @@ async def ocr_render(file: UploadFile = File(...)):
                 suffix = ".png"
 
         # Save to temporary file
+        logger.debug(f"Saving file to temporary location with suffix: {suffix}")
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(contents)
             tmp_path = tmp_file.name
+        logger.debug(f"Temporary file created at: {tmp_path}")
 
         try:
             # For PDFs, try to extract text first (if it has text layers)
             if is_pdf:
+                logger.info("Processing PDF file - attempting text extraction first")
                 extracted_text = extract_text_from_pdf(tmp_path)
 
                 if extracted_text:
                     # PDF has text layers - use text extraction
                     # (faster, more accurate)
-                    logger.info("PDF has text layers, using text extraction")
+                    text_length = len(extracted_text)
+                    logger.info(
+                        f"PDF has text layers, using text extraction - "
+                        f"extracted {text_length} characters"
+                    )
                     json_export = create_ocr_result_from_text(extracted_text)
                     json_export = convert_to_json_serializable(json_export)
+
+                    logger.info("Text extraction completed, preparing response")
+                    elapsed_time = time.time() - start_time
+                    logger.info(
+                        f"OCR render request completed successfully in "
+                        f"{elapsed_time:.2f}s (method: text_extraction)"
+                    )
+
                     return JSONResponse(
                         content={
                             "result": json_export,
@@ -291,31 +328,61 @@ async def ocr_render(file: UploadFile = File(...)):
                     )
                 else:
                     # Scanned PDF - need OCR
-                    logger.info("PDF appears to be scanned, using OCR")
+                    logger.info("PDF appears to be scanned (no text layers), using OCR")
                     doc = DocumentFile.from_pdf(tmp_path)
+                    logger.debug("PDF document loaded for OCR processing")
             else:
                 # Image file - use OCR
+                logger.info("Processing image file - using OCR")
                 doc = DocumentFile.from_images([tmp_path])
+                logger.debug("Image document loaded for OCR processing")
 
             # Run OCR
+            logger.info("Running OCR prediction...")
+            ocr_start_time = time.time()
             result = predictor(doc)
+            ocr_elapsed = time.time() - ocr_start_time
+            logger.info(f"OCR prediction completed in {ocr_elapsed:.2f}s")
 
             # Extract text from the OCR result
+            logger.debug("Extracting text from OCR result...")
             text = result.render()
+            text_length = len(text)
+            logger.info(f"Text extracted from OCR result - {text_length} characters")
 
             # Call LLM
+            logger.info("Calling LLM for text processing...")
+            llm_start_time = time.time()
             prompt = SYSTEM_PROMPT + "\n\n" + text
             response = call_llm.call_llm_json(prompt)
+            llm_elapsed = time.time() - llm_start_time
+            logger.info(f"LLM call completed in {llm_elapsed:.2f}s")
+
+            elapsed_time = time.time() - start_time
+            logger.info(
+                f"OCR render request completed successfully in "
+                f"{elapsed_time:.2f}s (method: OCR)"
+            )
 
             return JSONResponse(content=response)
         finally:
             # Clean up temporary file
             if os.path.exists(tmp_path):
+                logger.debug(f"Cleaning up temporary file: {tmp_path}")
                 os.unlink(tmp_path)
+            else:
+                logger.warning(f"Temporary file not found for cleanup: {tmp_path}")
 
+    except HTTPException:
+        # Re-raise HTTP exceptions without logging (they're already handled)
+        raise
     except Exception as e:
+        elapsed_time = time.time() - start_time
         error_msg = f"Error processing file: {str(e)}"
-        logger.error(error_msg, exc_info=True)
+        logger.error(
+            f"OCR render request failed after {elapsed_time:.2f}s - " f"{error_msg}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=error_msg)
 
 
