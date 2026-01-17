@@ -53,6 +53,57 @@ def get_db_connection():
         raise
 
 
+def find_or_create_category_id(conn, category_name: str) -> int:
+    """Find or create a category and return its ID."""
+    cursor = conn.cursor()
+    try:
+        # Try to find existing category
+        cursor.execute("SELECT id FROM categories WHERE name = %s", (category_name,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+
+        # Create new category if not found
+        logger.info(f"Creating new category: {category_name}")
+        cursor.execute(
+            "INSERT INTO categories (name, description) "
+            "VALUES (%s, %s) RETURNING id",
+            (category_name, "User created category"),
+        )
+        category_id = cursor.fetchone()[0]
+        conn.commit()
+        return category_id
+    finally:
+        cursor.close()
+
+
+def find_or_create_payment_method_id(conn, method_name: str) -> Optional[int]:
+    """Find or create a payment method and return its ID."""
+    if not method_name:
+        return None
+
+    cursor = conn.cursor()
+    try:
+        # Try to find existing payment method
+        cursor.execute("SELECT id FROM payment_methods WHERE name = %s", (method_name,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+
+        # Create new payment method if not found
+        logger.info(f"Creating new payment method: {method_name}")
+        cursor.execute(
+            "INSERT INTO payment_methods (name, description) "
+            "VALUES (%s, %s) RETURNING id",
+            (method_name, "User created payment method"),
+        )
+        method_id = cursor.fetchone()[0]
+        conn.commit()
+        return method_id
+    finally:
+        cursor.close()
+
+
 # Ensure Hugging Face cache is set to a persistent location
 # This prevents re-downloading models on every restart
 cache_dir = os.path.expanduser("~/.cache/huggingface")
@@ -543,6 +594,29 @@ class TransactionInput(BaseModel):
         return v
 
 
+# Models for insert-transaction endpoint
+class InsertTransactionRequest(BaseModel):
+    amount: float
+    currency: str
+    category: Optional[str] = None
+    method: Optional[str] = None
+    occurredAt: datetime
+    merchant: Optional[str] = None
+    note: Optional[str] = None
+
+
+class TransactionResponse(BaseModel):
+    id: str
+    amount: float
+    currency: str  # CurrencyCode type
+    category: str
+    method: str
+    occurredAt: datetime
+    merchant: Optional[str] = None
+    note: Optional[str] = None
+    aiComment: str
+
+
 @app.post("/manual-input", response_model=ManualInputResponse)
 async def manual_input(data: ManualInputRequest):
     """
@@ -690,3 +764,120 @@ async def call_ai_comment(data: list[TransactionInput]):
     ai_comment = {"ai_comment": call_llm.call_llm(prompt), "status": 200}
 
     return JSONResponse(content=ai_comment)
+
+
+@app.post("/insert-transactions", response_model=List[TransactionResponse])
+async def insert_transactions(data: List[InsertTransactionRequest]):
+    """
+    Bulk insert transactions into the database.
+
+    Args:
+        data: List of transaction input data, each containing amount, currency,
+              category (name), method (name), occurredAt, merchant, and note
+
+    Returns:
+        List of transaction objects with all fields including id, category,
+        method, and aiComment
+    """
+    if not data:
+        return []
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Cache for category and payment method IDs to avoid repeated queries
+        category_cache = {}
+        payment_method_cache = {}
+
+        responses = []
+
+        for transaction_data in data:
+            # Handle category - find or create (with caching)
+            category_name = (
+                transaction_data.category
+                if transaction_data.category
+                else "Uncategorized"
+            )
+            if category_name not in category_cache:
+                category_cache[category_name] = find_or_create_category_id(
+                    conn, category_name
+                )
+            category_id = category_cache[category_name]
+
+            # Handle payment method - find or create (optional, with caching)
+            payment_method_id = None
+            payment_method_name = "Unknown"
+            if transaction_data.method:
+                method_name = transaction_data.method
+                if method_name not in payment_method_cache:
+                    payment_method_cache[method_name] = (
+                        find_or_create_payment_method_id(conn, method_name)
+                    )
+                payment_method_id = payment_method_cache[method_name]
+                payment_method_name = method_name
+
+            # Prepare transaction data
+            occurred_at = transaction_data.occurredAt
+            date_str = occurred_at.isoformat()
+            amount = transaction_data.amount
+            description = transaction_data.note if transaction_data.note else ""
+            merchant = transaction_data.merchant if transaction_data.merchant else None
+            expense = True  # Default to expense
+            ai_comment = "Transaction inserted via API"  # Default AI comment
+
+            # Insert transaction
+            insert_query = """
+                INSERT INTO transactions
+                (date, category_id, amount, description, merchant, expense,
+                 payment_method_id, ai_comment)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """
+
+            cursor.execute(
+                insert_query,
+                (
+                    date_str,
+                    category_id,
+                    amount,
+                    description,
+                    merchant,
+                    expense,
+                    payment_method_id,
+                    ai_comment,
+                ),
+            )
+
+            transaction_id = cursor.fetchone()[0]
+
+            # Create response object
+            response = TransactionResponse(
+                id=str(transaction_id),
+                amount=amount,
+                currency=transaction_data.currency,
+                category=category_name,
+                method=payment_method_name,
+                occurredAt=occurred_at,
+                merchant=merchant,
+                note=description,
+                aiComment=ai_comment,
+            )
+            responses.append(response)
+
+        # Commit all transactions at once
+        conn.commit()
+        cursor.close()
+
+        return responses
+
+    except Exception as e:
+        logger.error(f"Error inserting transactions: {str(e)}", exc_info=True)
+        if conn:
+            conn.rollback()
+        error_msg = f"Error inserting transactions: {str(e)}"
+        raise HTTPException(status_code=500, detail=error_msg)
+    finally:
+        if conn:
+            conn.close()
