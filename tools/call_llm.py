@@ -120,6 +120,11 @@ def _call_openai(
         )
 
         result = response.choices[0].message.content
+        if result is None:
+            logger.error("OpenAI API returned None content")
+            raise ValueError(
+                "OpenAI API returned None content. The model may have been filtered or returned no response."
+            )
         tokens_used = response.usage.total_tokens if response.usage else "unknown"
         logger.info(f"OpenAI API call successful. Tokens used: {tokens_used}")
         return result
@@ -190,7 +195,17 @@ def _call_anthropic(
             **kwargs,
         )
 
+        if not message.content or len(message.content) == 0:
+            logger.error("Anthropic API returned empty content")
+            raise ValueError(
+                "Anthropic API returned empty content. The model may have been filtered or returned no response."
+            )
         result = message.content[0].text
+        if result is None:
+            logger.error("Anthropic API returned None text")
+            raise ValueError(
+                "Anthropic API returned None text. The model may have been filtered or returned no response."
+            )
         if message.usage:
             tokens_used = message.usage.input_tokens + message.usage.output_tokens
         else:
@@ -238,8 +253,27 @@ def call_llm_json(
         **kwargs,
     )
 
+    # Check if response is None or empty
+    if response is None:
+        logger.error("LLM returned None response")
+        raise ValueError(
+            "LLM response is None. The API call may have failed or returned no content."
+        )
+
+    if not isinstance(response, str):
+        logger.error(f"LLM returned non-string response: {type(response)}")
+        raise ValueError(f"LLM response is not a string: {type(response)}")
+
     # Try to extract JSON from markdown code blocks if present
     response = response.strip()
+
+    # Check if response is empty after stripping
+    if not response:
+        logger.error("LLM returned empty response")
+        raise ValueError(
+            "LLM response is empty. The API call may have returned no content."
+        )
+
     if "```json" in response:
         # Extract JSON from markdown code block
         start = response.find("```json") + 7
@@ -253,12 +287,22 @@ def call_llm_json(
         if end != -1:
             response = response[start:end].strip()
 
+    # Check again after extracting from code blocks
+    if not response:
+        logger.error("LLM response is empty after extracting from code blocks")
+        raise ValueError("LLM response is empty after extracting from code blocks.")
+
     try:
         return json.loads(response)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {response[:200]}...")
+        logger.error(
+            f"Failed to parse JSON response. Response preview: {response[:200]}..."
+        )
+        logger.error(f"Full response length: {len(response)} characters")
         raise json.JSONDecodeError(
-            f"LLM response is not valid JSON: {str(e)}", response, 0
+            f"LLM response is not valid JSON: {str(e)}. Response preview: {response[:200]}",
+            response,
+            e.pos if hasattr(e, "pos") else 0,
         )
 
 
@@ -333,8 +377,27 @@ async def call_llm_json_async(
         **kwargs,
     )
 
+    # Check if response is None or empty
+    if response is None:
+        logger.error("LLM returned None response")
+        raise ValueError(
+            "LLM response is None. The API call may have failed or returned no content."
+        )
+
+    if not isinstance(response, str):
+        logger.error(f"LLM returned non-string response: {type(response)}")
+        raise ValueError(f"LLM response is not a string: {type(response)}")
+
     # Try to extract JSON from markdown code blocks if present
     response = response.strip()
+
+    # Check if response is empty after stripping
+    if not response:
+        logger.error("LLM returned empty response")
+        raise ValueError(
+            "LLM response is empty. The API call may have returned no content."
+        )
+
     if "```json" in response:
         start = response.find("```json") + 7
         end = response.find("```", start)
@@ -346,10 +409,20 @@ async def call_llm_json_async(
         if end != -1:
             response = response[start:end].strip()
 
+    # Check again after extracting from code blocks
+    if not response:
+        logger.error("LLM response is empty after extracting from code blocks")
+        raise ValueError("LLM response is empty after extracting from code blocks.")
+
     try:
         return json.loads(response)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {response[:200]}...")
+        logger.error(
+            f"Failed to parse JSON response. Response preview: {response[:200]}..."
+        )
+        logger.error(f"Full response length: {len(response)} characters")
         raise json.JSONDecodeError(
-            f"LLM response is not valid JSON: {str(e)}", response, 0
+            f"LLM response is not valid JSON: {str(e)}. Response preview: {response[:200]}",
+            response,
+            e.pos if hasattr(e, "pos") else 0,
         )
