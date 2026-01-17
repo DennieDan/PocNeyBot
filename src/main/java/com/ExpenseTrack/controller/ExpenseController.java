@@ -202,8 +202,8 @@ public class ExpenseController {
                     Double.parseDouble(request.get("amount").toString()) : 0.0;
             String note = request.get("note") != null ?
                     request.get("note").toString() : "";
-            /*String merchant = request.get("merchant") != null ?
-                    request.get("merchant").toString() : "Unknown";*/
+            String merchant = request.get("merchant") != null ?
+                    request.get("merchant").toString() : "Unknown";
             String currency = request.get("currency") != null ?
                     request.get("currency").toString():"SGD";
             //String category = request
@@ -221,18 +221,18 @@ public class ExpenseController {
             //Long categoryId = findOrCreateCategory(request.get("category"));
             // PostgreSQL INSERT with RETURNING
 //
-            String sql = "INSERT INTO transactions (date, amount, description, expense, category_id," +
+            String sql = "INSERT INTO transactions (date, amount, description, expense, category_id, merchant, " +
                     "currency, ai_comment) " +
-                    "VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?) " +
-                    "RETURNING id, date, amount, expense";
+                    "VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?) " +
+                    "RETURNING id, date, merchant, amount, expense";
             try (PreparedStatement stmt = conn.prepareStatement(sql)) {
                 stmt.setDouble(1, amount);
                 stmt.setString(2, note);
                 stmt.setBoolean(3, isExpense);
                 stmt.setLong(4, categoryId);
-                //stmt.setString(5, merchant);
-                stmt.setString(5, currency);
-                stmt.setString(6, "Quick insert");
+                stmt.setString(5, merchant);
+                stmt.setString(6, currency);
+                stmt.setString(7, "Quick insert");
                 //stmt.setString(4, "Direct insert with commit");
 
                 ResultSet rs = stmt.executeQuery();
@@ -248,7 +248,7 @@ public class ExpenseController {
                     System.out.println("   Amount: " + insertedAmount);
                     System.out.println("   Database: " + conn.getMetaData().getDatabaseProductName());
                     System.out.println("   Is Expense: " + expenseFlag + " (1=true/expense, 0=false/income)");
-                    //System.out.println("   Merchant Note: " + merchant);
+                    System.out.println("   Merchant Note: " + merchant);
 
                     // VERIFY it's actually there
                     String verifySql = "SELECT COUNT(*) as count FROM transactions WHERE id = ?";
@@ -277,7 +277,6 @@ public class ExpenseController {
             System.err.println("Insert error: " + e.getMessage());
             e.printStackTrace();
 
-            // Check if it's H2 error
             if (e.getMessage().contains("H2")) {
                 return ResponseEntity.status(500).body(Map.of(
                         "error", "STILL CONNECTED TO H2!",
