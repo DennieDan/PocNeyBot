@@ -1,3 +1,8 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-doctr[viz] @ git+https://github.com/mindee/doctr.git
+matplotlib
+pillow>=9.0.0
+numpy>=1.21.0
+torch>=1.9.0
+python-multipart>=0.0.5
