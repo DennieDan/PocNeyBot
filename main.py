@@ -1,9 +1,10 @@
+import json
 import logging
 import os
 import tempfile
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -12,11 +13,11 @@ from doctr.models import ocr_predictor
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from pypdf import PdfReader
 
 from tools import call_llm
-from tools.llm_system_prompt import SYSTEM_PROMPT
+from tools.llm_system_prompt import ANNOYING_PROMPT, SYSTEM_PROMPT
 
 # Load environment variables from .env file
 load_dotenv()
@@ -395,8 +396,10 @@ class ManualInputRequest(BaseModel):
     amount: float
     note: str
     category: Optional[int] = None
-    source: Optional[int] = None
-    time: Optional[datetime] = None
+    method: Optional[int] = None
+    occurredAt: Optional[datetime] = None
+    currency: Optional[str] = "SGD"
+    merchant: Optional[str] = None
 
 
 class ManualInputResponse(BaseModel):
@@ -406,6 +409,7 @@ class ManualInputResponse(BaseModel):
     category: str
     amount: float
     currency: str
+    item: Optional[str] = None
     merchant: Optional[str] = None
     occurredAt: datetime
     note: Optional[str] = None
@@ -424,6 +428,26 @@ class OcrItem(BaseModel):
 
 class OcrItemsResponse(BaseModel):
     items: list[OcrItem]
+
+
+class TransactionInput(BaseModel):
+    method: str
+    aiComment: str = ""
+    category: str
+    item: str
+    amount: Union[str, float]
+    currency: str
+    merchant: str
+    occurredAt: str
+    note: str
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def convert_amount(cls, v):
+        """Convert string amount to float if needed."""
+        if isinstance(v, str):
+            return float(v)
+        return v
 
 
 @app.post("/manual-input", response_model=ManualInputResponse)
@@ -475,9 +499,29 @@ async def manual_input(data: ManualInputRequest):
         category=category_str,
         amount=data.amount,
         currency=currency,
+        item=None,
         merchant=merchant,
         occurredAt=datetime.now(),
         note=data.note,
     )
 
     return response
+
+
+@app.post("/call_ai_comment")
+async def call_ai_comment(data: list[TransactionInput]):
+    """
+    Call AI comment endpoint that accepts transaction data.
+
+    Args:
+        data: List of transaction input data containing amount, note,
+              and optional fields
+
+    Returns:
+        JSON response with AI comment
+    """
+    json_input = [item.model_dump() for item in data]
+    prompt = ANNOYING_PROMPT + "\n\n" + json.dumps(json_input)
+    ai_comment = {"ai_comment": call_llm.call_llm(prompt), "status": 200}
+
+    return JSONResponse(content=ai_comment)
