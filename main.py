@@ -9,9 +9,17 @@ import numpy as np
 import torch
 from doctr.io import DocumentFile
 from doctr.models import ocr_predictor
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pypdf import PdfReader
+
+from tools import call_llm
+from tools.llm_system_prompt import SYSTEM_PROMPT
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -73,7 +81,14 @@ def convert_to_json_serializable(obj):
 
 @app.get("/")
 def read_root():
-    return {"message": "OCR API - Upload an image to /ocr endpoint"}
+    return {
+        "message": "OCR API - Upload an image or PDF to /ocr endpoint",
+        "supported_formats": [
+            "image/*",
+            "application/pdf",
+            "application/pdfa",
+        ],
+    }
 
 
 @app.get("/health")
@@ -81,33 +96,272 @@ def health_check():
     return {"status": "healthy", "device": device}
 
 
-@app.post("/ocr")
-async def ocr_image(file: UploadFile = File(...)):
+def extract_text_from_pdf(pdf_path: str) -> Optional[str]:
     """
-    OCR endpoint that accepts an image file and returns OCR results as JSON.
+    Extract text from PDF if it has text layers.
 
     Args:
-        file: Image file (JPEG, PNG, etc.)
+        pdf_path: Path to PDF file
 
     Returns:
-        JSON response with OCR results
+        Extracted text if PDF has text layers, None otherwise
+    """
+    try:
+        reader = PdfReader(pdf_path)
+        text_parts = []
+
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text and page_text.strip():
+                text_parts.append(page_text)
+
+        if text_parts:
+            return "\n".join(text_parts)
+        return None
+    except Exception as e:
+        logger.warning(f"Could not extract text from PDF: {str(e)}")
+        return None
+
+
+def create_ocr_result_from_text(text: str) -> dict:
+    """
+    Create a doctr-like OCR result structure from plain text.
+
+    This allows using the same prompt processing for both OCR and
+    text extraction.
+
+    Args:
+        text: Plain text content
+
+    Returns:
+        Dictionary in doctr OCR result format
+    """
+    lines = text.split("\n")
+    words_list = []
+
+    for line_idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+
+        words = line.split()
+        line_words = []
+        for word_idx, word in enumerate(words):
+            # Create a simple geometry (normalized coordinates)
+            # This is a simplified representation
+            line_words.append(
+                {
+                    "value": word,
+                    "confidence": 1.0,
+                    "geometry": [
+                        [word_idx * 0.1, line_idx * 0.05],
+                        [(word_idx + 1) * 0.1, line_idx * 0.05],
+                        [(word_idx + 1) * 0.1, (line_idx + 1) * 0.05],
+                        [word_idx * 0.1, (line_idx + 1) * 0.05],
+                    ],
+                    "objectness_score": 1.0,
+                    "crop_orientation": {"value": 0, "confidence": 1.0},
+                }
+            )
+
+        if line_words:
+            words_list.append(
+                {
+                    "geometry": [
+                        [0.0, line_idx * 0.05],
+                        [1.0, line_idx * 0.05],
+                        [1.0, (line_idx + 1) * 0.05],
+                        [0.0, (line_idx + 1) * 0.05],
+                    ],
+                    "objectness_score": 1.0,
+                    "words": line_words,
+                }
+            )
+
+    return {
+        "pages": [
+            {
+                "page_idx": 0,
+                "dimensions": [960, 540],
+                "orientation": {"value": 0, "confidence": None},
+                "language": {"value": None, "confidence": None},
+                "blocks": [
+                    {
+                        "geometry": [
+                            [0.0, 0.0],
+                            [1.0, 0.0],
+                            [1.0, 1.0],
+                            [0.0, 1.0],
+                        ],
+                        "objectness_score": 1.0,
+                        "lines": words_list,
+                        "artefacts": [],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+@app.post("/ocr_render")
+async def ocr_render(file: UploadFile = File(...)):
+    """
+    OCR render endpoint that accepts an image or PDF file and returns a rendered PDF file.
+
+    Args:
+        file: Image file (JPEG, PNG, etc.) or PDF file (including PDF/A)
+
+    Returns:
+        Texts in same lines
     """
     # Validate file type
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
+    is_pdf = file.content_type and file.content_type in [
+        "application/pdf",
+        "application/pdfa",
+    ]
+    is_image = file.content_type and file.content_type.startswith("image/")
+
+    if not (is_pdf or is_image):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be an image (JPEG, PNG, etc.) or PDF",
+        )
 
     try:
         # Read the uploaded file
         contents = await file.read()
 
+        # Determine file extension
+        if is_pdf:
+            suffix = ".pdf"
+        else:
+            # Try to determine from content type
+            suffix = ".jpg"
+            if file.content_type == "image/png":
+                suffix = ".png"
+
         # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(contents)
             tmp_path = tmp_file.name
 
         try:
-            # Create DocumentFile from file path
-            doc = DocumentFile.from_images([tmp_path])
+            # For PDFs, try to extract text first (if it has text layers)
+            if is_pdf:
+                extracted_text = extract_text_from_pdf(tmp_path)
+
+                if extracted_text:
+                    # PDF has text layers - use text extraction
+                    # (faster, more accurate)
+                    logger.info("PDF has text layers, using text extraction")
+                    json_export = create_ocr_result_from_text(extracted_text)
+                    json_export = convert_to_json_serializable(json_export)
+                    return JSONResponse(
+                        content={
+                            "result": json_export,
+                            "method": "text_extraction",
+                            "note": "PDF had text layers, no OCR needed",
+                        }
+                    )
+                else:
+                    # Scanned PDF - need OCR
+                    logger.info("PDF appears to be scanned, using OCR")
+                    doc = DocumentFile.from_pdf(tmp_path)
+            else:
+                # Image file - use OCR
+                doc = DocumentFile.from_images([tmp_path])
+
+            # Run OCR
+            result = predictor(doc)
+
+            # Extract text from the OCR result
+            text = result.render()
+
+            # Call LLM
+            prompt = SYSTEM_PROMPT + "\n\n" + text
+            response = call_llm.call_llm_json(prompt)
+
+            return JSONResponse(content=response)
+        finally:
+            # Clean up temporary file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    except Exception as e:
+        error_msg = f"Error processing file: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/ocr")
+async def ocr_image(file: UploadFile = File(...)):
+    """
+    OCR endpoint that accepts an image or PDF file and returns OCR results.
+
+    For PDFs with text layers, extracts text directly (faster, more accurate).
+    For scanned PDFs or images, performs OCR.
+
+    Args:
+        file: Image file (JPEG, PNG, etc.) or PDF file (including PDF/A)
+
+    Returns:
+        JSON response with OCR results in doctr format
+    """
+    # Validate file type
+    is_pdf = file.content_type and file.content_type in [
+        "application/pdf",
+        "application/pdfa",
+    ]
+    is_image = file.content_type and file.content_type.startswith("image/")
+
+    if not (is_pdf or is_image):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be an image (JPEG, PNG, etc.) or PDF",
+        )
+
+    try:
+        # Read the uploaded file
+        contents = await file.read()
+
+        # Determine file extension
+        if is_pdf:
+            suffix = ".pdf"
+        else:
+            # Try to determine from content type
+            suffix = ".jpg"
+            if file.content_type == "image/png":
+                suffix = ".png"
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(contents)
+            tmp_path = tmp_file.name
+
+        try:
+            # For PDFs, try to extract text first (if it has text layers)
+            if is_pdf:
+                extracted_text = extract_text_from_pdf(tmp_path)
+
+                if extracted_text:
+                    # PDF has text layers - use text extraction
+                    # (faster, more accurate)
+                    logger.info("PDF has text layers, using text extraction")
+                    json_export = create_ocr_result_from_text(extracted_text)
+                    json_export = convert_to_json_serializable(json_export)
+                    return JSONResponse(
+                        content={
+                            "result": json_export,
+                            "method": "text_extraction",
+                            "note": "PDF had text layers, no OCR needed",
+                        }
+                    )
+                else:
+                    # Scanned PDF - need OCR
+                    logger.info("PDF appears to be scanned, using OCR")
+                    doc = DocumentFile.from_pdf(tmp_path)
+            else:
+                # Image file - use OCR
+                doc = DocumentFile.from_images([tmp_path])
 
             # Run OCR
             result = predictor(doc)
@@ -118,14 +372,20 @@ async def ocr_image(file: UploadFile = File(...)):
             # Convert numpy types to JSON-serializable types
             json_export = convert_to_json_serializable(json_export)
 
-            return JSONResponse(content=json_export)
+            return JSONResponse(
+                content={
+                    "result": json_export,
+                    "method": "ocr",
+                    "note": "OCR was performed on image/scanned PDF",
+                }
+            )
         finally:
             # Clean up temporary file
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
     except Exception as e:
-        error_msg = f"Error processing image: {str(e)}"
+        error_msg = f"Error processing file: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise HTTPException(status_code=500, detail=error_msg)
 
@@ -141,14 +401,29 @@ class ManualInputRequest(BaseModel):
 
 class ManualInputResponse(BaseModel):
     id: str
-    payment_method: str
-    ai_comment: str
+    method: str
+    aiComment: str
     category: str
     amount: float
     currency: str
     merchant: Optional[str] = None
     occurredAt: datetime
     note: Optional[str] = None
+
+
+class OcrRequest(BaseModel):
+    file: UploadFile = File(...)
+
+
+class OcrItem(BaseModel):
+    item: str
+    price: float
+    quantity: int
+    total: float
+
+
+class OcrItemsResponse(BaseModel):
+    items: list[OcrItem]
 
 
 @app.post("/manual-input", response_model=ManualInputResponse)
@@ -195,8 +470,8 @@ async def manual_input(data: ManualInputRequest):
 
     response = ManualInputResponse(
         id=transaction_id,
-        payment_method=payment_method,
-        ai_comment=ai_comment,
+        method=payment_method,
+        aiComment=ai_comment,
         category=category_str,
         amount=data.amount,
         currency=currency,

@@ -1,0 +1,38 @@
+[
+    {
+        "item": "COLLAR SHABU SHABU",
+        "price": 7.70,
+        "quantity": 1,
+        "total": 7.70
+    },
+    {
+        "item": "PSR AUST WNGBOK",
+        "price": 1.77,
+        "quantity": 1,
+        "total": 1.77
+    },
+    {
+        "item": "PSR SEA CUCUMBER",
+        "price": 6.62,
+        "quantity": 1,
+        "total": 6.62
+    },
+    {
+        "item": "PSR SEA PARSLEY 50G",
+        "price": 1.05,
+        "quantity": 1,
+        "total": 1.05
+    },
+    {
+        "item": "PSR YONG TAU FOO",
+        "price": 3.30,
+        "quantity": 1,
+        "total": 3.30
+    },
+    {
+        "item": "V S.EGG TF PLUS 150G",
+        "price": 1.00,
+        "quantity": 1,
+        "total": 1.00
+    }
+]
