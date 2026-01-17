@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     category_id INTEGER NOT NULL REFERENCES categories(id),
     amount DECIMAL(10, 2) NOT NULL,
     description TEXT,
+    merchant VARCHAR(255),
     expense BOOLEAN NOT NULL,
     payment_method_id INTEGER REFERENCES payment_methods(id),
     ai_comment TEXT
