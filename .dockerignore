@@ -1,0 +1,38 @@
+# Python files (not needed for Spring Boot build)
+venv/
+__pycache__/
+*.py
+*.pyc
+*.db
+*.sqlite
+
+# Build artifacts
+target/
+*.class
+*.jar
+*.war
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Documentation
+*.md
+README*
+
+# Other
+response.json
+generate_random_transactions.py
+tools/
