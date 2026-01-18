@@ -82,6 +82,8 @@ A FastAPI-based backend service for processing receipts, extracting transaction 
 
 ## Running the Application
 
+The cloud deployed server is available at: `https://finaunty-python.onrender.com`h
+
 1. **Activate the virtual environment** (if not already active):
    ```bash
    source venv/bin/activate
